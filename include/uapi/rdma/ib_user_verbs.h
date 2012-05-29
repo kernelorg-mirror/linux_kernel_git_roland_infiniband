@@ -87,6 +87,9 @@ enum {
 	IB_USER_VERBS_CMD_CLOSE_XRCD,
 	IB_USER_VERBS_CMD_CREATE_XSRQ,
 	IB_USER_VERBS_CMD_OPEN_QP,
+	IB_USER_VERBS_CMD_CREATE_MMU_NOTIFY_CHANNEL,
+	IB_USER_VERBS_CMD_REG_MMU_NOTIFY_MR,
+	IB_USER_VERBS_CMD_DEREG_MMU_NOTIFY_MR,
 };
 
 enum {
@@ -113,6 +116,10 @@ struct ib_uverbs_async_event_desc {
 };
 
 struct ib_uverbs_comp_event_desc {
+	__u64 cq_handle;
+};
+
+struct ib_uverbs_mmu_notify_event_desc {
 	__u64 cq_handle;
 };
 
@@ -897,6 +904,35 @@ struct ib_uverbs_destroy_srq {
 };
 
 struct ib_uverbs_destroy_srq_resp {
+	__u32 events_reported;
+};
+
+struct ib_uverbs_create_mmu_notify_channel {
+	__u64 response;
+};
+
+struct ib_uverbs_create_mmu_notify_channel_resp {
+	__u32 fd;
+};
+
+struct ib_uverbs_reg_mmu_notify_mr {
+	__u64 response;
+	__u64 user_handle;
+	__u64 start;
+	__u64 length;
+	__u64 hca_va;
+	__u32 pd_handle;
+	__u32 access_flags;
+	__u64 driver_data[0];
+};
+
+struct ib_uverbs_dereg_mmu_notify_mr {
+	__u64 response;
+	__u32 mr_handle;
+	__u32 reserved;
+};
+
+struct ib_uverbs_dereg_mmu_notify_mr_resp {
 	__u32 events_reported;
 };
 

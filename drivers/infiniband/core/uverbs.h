@@ -96,9 +96,15 @@ struct ib_uverbs_device {
 	struct mutex				xrcd_tree_mutex;
 };
 
+enum ib_uverbs_event_file_type {
+	IB_UVERBS_EVENT_FILE_ASYNC,
+	IB_UVERBS_EVENT_FILE_COMP,
+	IB_UVERBS_EVENT_FILE_MMU_NOTIFY,
+};
+
 struct ib_uverbs_event_file {
 	struct kref				ref;
-	int					is_async;
+	enum ib_uverbs_event_file_type		type;
 	struct ib_uverbs_file		       *uverbs_file;
 	spinlock_t				lock;
 	int					is_closed;
@@ -113,13 +119,17 @@ struct ib_uverbs_file {
 	struct ib_uverbs_device		       *device;
 	struct ib_ucontext		       *ucontext;
 	struct ib_event_handler			event_handler;
+	struct ib_ummunotify_context	        mmu_notify_context;
+	u64				       *mmu_notify_counter;
 	struct ib_uverbs_event_file	       *async_file;
+	struct ib_uverbs_event_file	       *mmu_notify_file;
 };
 
 struct ib_uverbs_event {
 	union {
 		struct ib_uverbs_async_event_desc	async;
 		struct ib_uverbs_comp_event_desc	comp;
+		struct ib_uverbs_mmu_notify_event_desc	mmu_notify;
 	}					desc;
 	struct list_head			list;
 	struct list_head			obj_list;
@@ -146,6 +156,11 @@ struct ib_uxrcd_object {
 struct ib_usrq_object {
 	struct ib_uevent_object	uevent;
 	struct ib_uxrcd_object *uxrcd;
+};
+
+struct ib_umr_object {
+	struct ib_uevent_object	uevent;
+	struct ib_ummunotify_range range;
 };
 
 struct ib_uqp_object {
@@ -177,7 +192,7 @@ extern struct idr ib_uverbs_rule_idr;
 void idr_remove_uobj(struct idr *idp, struct ib_uobject *uobj);
 
 struct file *ib_uverbs_alloc_event_file(struct ib_uverbs_file *uverbs_file,
-					int is_async);
+					enum ib_uverbs_event_file_type type);
 struct ib_uverbs_event_file *ib_uverbs_lookup_comp_file(int fd);
 
 void ib_uverbs_release_ucq(struct ib_uverbs_file *file,
@@ -187,6 +202,8 @@ void ib_uverbs_release_uevent(struct ib_uverbs_file *file,
 			      struct ib_uevent_object *uobj);
 
 void ib_uverbs_comp_handler(struct ib_cq *cq, void *cq_context);
+void ib_uverbs_mr_event_handler(struct ib_ummunotify_context *context,
+				struct ib_ummunotify_range *range);
 void ib_uverbs_cq_event_handler(struct ib_event *event, void *context_ptr);
 void ib_uverbs_qp_event_handler(struct ib_event *event, void *context_ptr);
 void ib_uverbs_srq_event_handler(struct ib_event *event, void *context_ptr);
@@ -250,6 +267,9 @@ IB_UVERBS_DECLARE_CMD(destroy_srq);
 IB_UVERBS_DECLARE_CMD(create_xsrq);
 IB_UVERBS_DECLARE_CMD(open_xrcd);
 IB_UVERBS_DECLARE_CMD(close_xrcd);
+IB_UVERBS_DECLARE_CMD(create_mmu_notify_channel);
+IB_UVERBS_DECLARE_CMD(reg_mmu_notify_mr);
+IB_UVERBS_DECLARE_CMD(dereg_mmu_notify_mr);
 
 #define IB_UVERBS_DECLARE_EX_CMD(name)				\
 	int ib_uverbs_ex_##name(struct ib_uverbs_file *file,	\

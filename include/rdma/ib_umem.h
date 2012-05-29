@@ -34,6 +34,8 @@
 #define IB_UMEM_H
 
 #include <linux/list.h>
+#include <linux/mmu_notifier.h>
+#include <linux/rbtree.h>
 #include <linux/scatterlist.h>
 #include <linux/workqueue.h>
 
@@ -80,7 +82,22 @@ static inline size_t ib_umem_num_pages(struct ib_umem *umem)
 	return (ib_umem_end(umem) - ib_umem_start(umem)) >> PAGE_SHIFT;
 }
 
+struct ib_ummunotify_range {
+	unsigned long		start;
+	unsigned long		end;
+	struct rb_node		node;
+};
+
 #ifdef CONFIG_INFINIBAND_USER_MEM
+
+struct ib_ummunotify_context {
+	struct mmu_notifier	mmu_notifier;
+	void		      (*callback)(struct ib_ummunotify_context *,
+					  struct ib_ummunotify_range *);
+	struct mm_struct       *mm;
+	struct rb_root		reg_tree;
+	spinlock_t		lock;
+};
 
 struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 			    size_t size, int access, int dmasync);
@@ -89,9 +106,36 @@ int ib_umem_page_count(struct ib_umem *umem);
 int ib_umem_copy_from(void *dst, struct ib_umem *umem, size_t offset,
 		      size_t length);
 
+void ib_ummunotify_register_range(struct ib_ummunotify_context *context,
+				  struct ib_ummunotify_range *range);
+void ib_ummunotify_unregister_range(struct ib_ummunotify_context *context,
+				    struct ib_ummunotify_range *range);
+
+int ib_ummunotify_init_context(struct ib_ummunotify_context *context,
+			       void (*callback)(struct ib_ummunotify_context *,
+						struct ib_ummunotify_range *));
+void ib_ummunotify_cleanup_context(struct ib_ummunotify_context *context);
+
+static inline void ib_ummunotify_clear_range(struct ib_ummunotify_range *range)
+{
+	RB_CLEAR_NODE(&range->node);
+}
+
+static inline void ib_ummunotify_clear_context(struct ib_ummunotify_context *context)
+{
+	context->mm = NULL;
+}
+
+static inline int ib_ummunotify_context_used(struct ib_ummunotify_context *context)
+{
+	return !!context->mm;
+}
+
 #else /* CONFIG_INFINIBAND_USER_MEM */
 
 #include <linux/err.h>
+
+struct ib_ummunotify_context;
 
 static inline struct ib_umem *ib_umem_get(struct ib_ucontext *context,
 					  unsigned long addr, size_t size,
@@ -104,6 +148,23 @@ static inline int ib_umem_copy_from(void *dst, struct ib_umem *umem, size_t offs
 		      		    size_t length) {
 	return -EINVAL;
 }
+
+static inline void ib_ummunotify_register_range(struct ib_ummunotify_context *context,
+						struct ib_ummunotify_range *range) { }
+static inline void ib_ummunotify_unregister_range(struct ib_ummunotify_context *context,
+						  struct ib_ummunotify_range *range) { }
+
+static inline int ib_ummunotify_init_context(struct ib_ummunotify_context *context,
+					     void (*callback)(struct ib_ummunotify_context *,
+							      struct ib_ummunotify_range *)) { return 0; }
+static inline void ib_ummunotify_cleanup_context(struct ib_ummunotify_context *context) { }
+
+static inline void ib_ummunotify_clear_range(struct ib_ummunotify_range *range) { }
+
+static inline void ib_ummunotify_clear_context(struct ib_ummunotify_context *context) { }
+
+static inline int ib_ummunotify_context_used(struct ib_ummunotify_context *context) { return 0; }
+
 #endif /* CONFIG_INFINIBAND_USER_MEM */
 
 #endif /* IB_UMEM_H */

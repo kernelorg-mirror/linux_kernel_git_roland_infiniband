@@ -352,3 +352,144 @@ int ib_umem_copy_from(void *dst, struct ib_umem *umem, size_t offset,
 		return 0;
 }
 EXPORT_SYMBOL(ib_umem_copy_from);
+
+void ib_ummunotify_register_range(struct ib_ummunotify_context *context,
+				  struct ib_ummunotify_range *range)
+{
+	struct ib_ummunotify_range *trange;
+	struct rb_node **n = &context->reg_tree.rb_node;
+	struct rb_node *pn;
+	unsigned long flags;
+
+	spin_lock_irqsave(&context->lock, flags);
+
+	pn = NULL;
+	while (*n) {
+		pn = *n;
+		trange = rb_entry(pn, struct ib_ummunotify_range, node);
+
+		if (range->start <= trange->start)
+			n = &pn->rb_left;
+		else
+			n = &pn->rb_right;
+	}
+
+	rb_link_node(&range->node, pn, n);
+	rb_insert_color(&range->node, &context->reg_tree);
+
+	spin_unlock_irqrestore(&context->lock, flags);
+}
+EXPORT_SYMBOL(ib_ummunotify_register_range);
+
+void ib_ummunotify_unregister_range(struct ib_ummunotify_context *context,
+				    struct ib_ummunotify_range *range)
+{
+	unsigned long flags;
+
+	if (!ib_ummunotify_context_used(context))
+		return;
+
+	if (RB_EMPTY_NODE(&range->node))
+		return;
+
+	spin_lock_irqsave(&context->lock, flags);
+	rb_erase(&range->node, &context->reg_tree);
+	spin_unlock_irqrestore(&context->lock, flags);
+}
+EXPORT_SYMBOL(ib_ummunotify_unregister_range);
+
+static void ib_ummunotify_handle_notify(struct mmu_notifier *mn,
+					unsigned long start, unsigned long end)
+{
+	struct ib_ummunotify_context *context =
+		container_of(mn, struct ib_ummunotify_context, mmu_notifier);
+	unsigned long flags;
+	struct rb_node *n;
+	struct ib_ummunotify_range *range;
+
+	spin_lock_irqsave(&context->lock, flags);
+
+	for (n = rb_first(&context->reg_tree); n; n = rb_next(n)) {
+		range = rb_entry(n, struct ib_ummunotify_range, node);
+
+		/*
+		 * Ranges overlap if they're not disjoint; and they're
+		 * disjoint if the end of one is before the start of
+		 * the other one.  So if both disjointness comparisons
+		 * fail then the ranges overlap.
+		 *
+		 * Since we keep the tree of regions we're watching
+		 * sorted by start address, we can end this loop as
+		 * soon as we hit a region that starts past the end of
+		 * the range for the event we're handling.
+		 */
+		if (range->start >= end)
+			break;
+
+		/*
+		 * Just go to the next region if the start of the
+		 * range is after the end of the region -- there
+		 * might still be more overlapping ranges that have a
+		 * greater start.
+		 */
+		if (start >= range->end)
+			continue;
+
+		context->callback(context, range);
+	}
+
+	spin_unlock_irqrestore(&context->lock, flags);
+}
+
+static void ib_ummunotify_invalidate_page(struct mmu_notifier *mn,
+					  struct mm_struct *mm,
+					  unsigned long addr)
+{
+	ib_ummunotify_handle_notify(mn, addr, addr + PAGE_SIZE);
+}
+
+static void ib_ummunotify_invalidate_range_start(struct mmu_notifier *mn,
+						 struct mm_struct *mm,
+						 unsigned long start,
+						 unsigned long end)
+{
+	ib_ummunotify_handle_notify(mn, start, end);
+}
+
+static const struct mmu_notifier_ops ib_ummunotify_mmu_notifier_ops = {
+	.invalidate_page	= ib_ummunotify_invalidate_page,
+	.invalidate_range_start	= ib_ummunotify_invalidate_range_start,
+};
+
+int ib_ummunotify_init_context(struct ib_ummunotify_context *context,
+			       void (*callback)(struct ib_ummunotify_context *,
+						struct ib_ummunotify_range *))
+{
+	int ret;
+
+	context->callback = callback;
+	context->reg_tree = RB_ROOT;
+	spin_lock_init(&context->lock);
+
+	context->mm = current->mm;
+	atomic_inc(&current->mm->mm_count);
+
+	context->mmu_notifier.ops = &ib_ummunotify_mmu_notifier_ops;
+	ret = mmu_notifier_register(&context->mmu_notifier, context->mm);
+	if (ret) {
+		mmdrop(context->mm);
+		context->mm = NULL;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(ib_ummunotify_init_context);
+
+void ib_ummunotify_cleanup_context(struct ib_ummunotify_context *context)
+{
+	if (!ib_ummunotify_context_used(context))
+		return;
+	mmu_notifier_unregister(&context->mmu_notifier, context->mm);
+	mmdrop(context->mm);
+}
+EXPORT_SYMBOL(ib_ummunotify_cleanup_context);
